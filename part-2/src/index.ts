@@ -1,13 +1,9 @@
 import express from 'express'
 import { env } from './env.ts'
-import { rollbackMigrations, runMigrations } from './migrations/runner.ts'
 import tasksApiRouter from './routes/api/tasks.ts'
 import usersApiRouter from './routes/api/users.ts'
 import rootRouter from './routes/index.ts'
 import { CronService } from './services/cron-service.ts'
-
-await rollbackMigrations()
-await runMigrations()
 
 const app = express()
 const cronService = new CronService()

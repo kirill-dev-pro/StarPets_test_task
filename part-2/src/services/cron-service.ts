@@ -8,7 +8,8 @@ import { taskFunctions } from './task-functions.ts'
 export class CronService {
   private serverId: string
   private isRunning: boolean = false
-  private checkInterval: number = 10000 // Check every 10 seconds
+  private isExecutingTask: boolean = false
+  private checkInterval: number = 1000 // Check every 1 second
   private cleanupInterval: number = 60000 // Cleanup every minute
   private intervalId: NodeJS.Timeout | null = null
   private cleanupIntervalId: NodeJS.Timeout | null = null
@@ -25,18 +26,13 @@ export class CronService {
     this.isRunning = true
 
     this.intervalId = setInterval(() => {
-      this.processReadyTasks().catch((error) => {
-        console.error('Error in processReadyTasks:', error)
-      })
+      // Only check for tasks if we're not currently executing one
+      if (!this.isExecutingTask) {
+        this.processReadyTasks()
+      }
     }, this.checkInterval)
 
-    this.cleanupIntervalId = setInterval(() => {
-      this.cleanupStuckTasks().catch((error) => {
-        console.error('Error in cleanupStuckTasks:', error)
-      })
-    }, this.cleanupInterval)
-
-    await this.processReadyTasks()
+    this.cleanupIntervalId = setInterval(() => this.cleanupStuckTasks(), this.cleanupInterval)
   }
 
   public async stop(): Promise<void> {
@@ -73,61 +69,56 @@ export class CronService {
 
   private async processReadyTasks(): Promise<void> {
     try {
-      // Find tasks that are ready to run and not currently running
-      const readyTasks = await Task.findAll({
+      const transaction = await db.transaction({
+        isolationLevel: Transaction.ISOLATION_LEVELS.SERIALIZABLE,
+      })
+
+      const foundTask = await Task.findOne({
         where: {
           isRunning: false,
           nextRunAt: {
             [Op.lte]: new Date(),
           },
         },
-        order: [['nextRunAt', 'ASC']],
+        lock: Transaction.LOCK.UPDATE,
+        skipLocked: true,
+        transaction,
       })
 
-      if (readyTasks.length === 0) {
+      if (!foundTask) {
+        await transaction.commit()
         return
       }
 
-      for (const task of readyTasks) {
-        const transaction = await db.transaction({
-          isolationLevel: Transaction.ISOLATION_LEVELS.SERIALIZABLE,
-        })
-
-        try {
-          const updated = await Task.update(
-            {
-              isRunning: true,
-              serverId: this.serverId,
-              startedAt: new Date(),
+      // // find and claim in single query
+      const [_, [task]] = await Task.update(
+        {
+          isRunning: true,
+          serverId: this.serverId,
+          startedAt: new Date(),
+        },
+        {
+          where: {
+            id: foundTask.id,
+            isRunning: false,
+            nextRunAt: {
+              [Op.lte]: new Date(),
             },
-            {
-              where: {
-                id: task.id,
-                isRunning: false, // Ensure it's still not running
-              },
-              transaction,
-            },
-          )
+          },
+          returning: true,
+          transaction,
+        },
+      )
 
-          await transaction.commit()
-
-          if (updated[0] > 0) {
-            this.executeTask(task).catch((error) => {
-              console.error(`Error executing task ${task.name}:`, error)
-            })
-
-            break
-          }
-        } catch (_) {
-          await transaction.rollback()
-        }
-      }
+      await transaction.commit()
+      await this.executeTask(task)
     } catch (error) {
       console.error('Error in processReadyTasks:', error)
     }
   }
 
   private async executeTask(task: TaskInstance): Promise<void> {
+    this.isExecutingTask = true
     const startTime = Date.now()
     console.log(`Starting execution of task: ${task.name}`)
 
@@ -186,6 +177,8 @@ export class CronService {
           where: { id: task.id },
         },
       )
+
+      this.isExecutingTask = false
     }
   }
 
