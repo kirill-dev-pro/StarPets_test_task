@@ -33,9 +33,9 @@ rootRouter.get('/', async (_, res) => {
         <div id="user-list" class="user-list grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           ${
             availableUsers
-              ? availableUsers
+              ? (availableUsers as User[])
                   .map(
-                    (user: User) => `
+                    (user) => `
             <div class="user-card bg-gray-800 p-4 rounded-lg shadow-md">
               <h3 class="text-lg font-semibold">User ID: ${user.id}</h3>
               <p class="text-gray-300">Balance: ${user.balance}</p>
